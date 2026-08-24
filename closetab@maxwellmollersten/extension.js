@@ -1,6 +1,6 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 //
-// windows-alt-tab@local
+// closetab@maxwellmollersten
 //
 // Adds a Windows-11-style close button to every preview of Cinnamon's stock
 // Alt+Tab switcher.
@@ -44,7 +44,7 @@ const Mainloop = imports.mainloop;
 const AppSwitcherModule = imports.ui.appSwitcher.appSwitcher;
 const ClassicSwitcherModule = imports.ui.appSwitcher.classicSwitcher;
 
-const LOG_PREFIX = 'WindowsAltTab: ';
+const LOG_PREFIX = 'CloseTab: ';
 const DEBUG = false;
 
 // Show the X only while the pointer is over its preview.
