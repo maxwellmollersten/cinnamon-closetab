@@ -1,7 +1,7 @@
 # cinnamon-closetab
 
 Windows-11-style close buttons on Cinnamon's Alt+Tab switcher. Hover a preview,
-click the `×`, and that window closes — without switching to it and without
+click the `×` or press q and that window closes, without switching to it and without
 dismissing the switcher.
 
 ![Alt+Tab with a close button on the hovered preview](docs/screenshot.png)
@@ -13,7 +13,7 @@ dismissing the switcher.
 ## Quickstart
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/cinnamon-closetab.git
+git clone https://github.com/maxwellmollersten/cinnamon-closetab.git
 cp -r cinnamon-closetab/windows-alt-tab@local ~/.local/share/cinnamon/extensions/
 gsettings set org.cinnamon enabled-extensions "['windows-alt-tab@local']"
 ```
