@@ -69,6 +69,12 @@ let originals = null;
 let pendingCloses = new Map();
 let lastCloseRequest = 0;
 
+// Every idle source we currently have queued, so disable() can cancel them.
+// A switcher normally cancels its own in _onDestroy, but if the extension is
+// disabled while one is open that patch is already gone, so the sweep in
+// disable() is what guarantees nothing outlives us.
+let pendingSyncIds = new Set();
+
 function nowMs() {
     return GLib.get_monotonic_time() / 1000;
 }
@@ -166,12 +172,12 @@ function setCloseButtonShown(button, shown) {
 
 function createCloseButton(metaWindow) {
     let button = new St.Button({
-        style_class: 'wat-close-button',
+        style_class: 'closetab-button',
         reactive: true,
         can_focus: false,
         track_hover: true
     });
-    button.set_child(new St.Label({ style_class: 'wat-close-glyph', text: '×' }));
+    button.set_child(new St.Label({ style_class: 'closetab-glyph', text: '×' }));
 
     // Pin to the top-right corner of the preview.  NB: St.Bin (and therefore
     // St.Button) shadows the "x-align"/"y-align" *properties* with StAlign, so
@@ -182,11 +188,12 @@ function createCloseButton(metaWindow) {
     button.set_y_align(Clutter.ActorAlign.START);
     button.opacity = SHOW_ON_HOVER_ONLY ? 0 : 255;
 
-    // St.Button claims button 1 on press, so the event never reaches the
-    // 'item-box' St.Button underneath: the window is never activated.
+    // Propagation is already handled for us: St.Button claims button 1 on
+    // press, so the event never reaches the 'item-box' St.Button underneath
+    // and the window is never activated.  'clicked' is not a Clutter event
+    // signal, so there is no return value to give here.
     button.connect('clicked', function () {
         closeWindow(metaWindow);
-        return Clutter.EVENT_STOP;
     });
 
     return button;
@@ -203,7 +210,7 @@ function patchedAppIconInit(window, showThumbnail) {
     let inner = this.actor;
     let wrapper = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
-        style_class: 'wat-preview',
+        style_class: 'closetab-preview',
         x_expand: true,
         y_expand: true
     });
@@ -263,11 +270,12 @@ function patchedAddIcon(appIcon) {
 function patchedUpdateList(direction) {
     originals.updateList.call(this, direction);
 
-    if (!SHOW_ON_HOVER_ONLY || this._destroyed || this._watSyncId)
+    if (!SHOW_ON_HOVER_ONLY || this._destroyed || this._closetabSyncId)
         return;
 
-    this._watSyncId = Mainloop.idle_add(() => {
-        this._watSyncId = 0;
+    let id = Mainloop.idle_add(() => {
+        pendingSyncIds.delete(id);
+        this._closetabSyncId = 0;
         if (this._destroyed)
             return GLib.SOURCE_REMOVE;
         try {
@@ -283,14 +291,29 @@ function patchedUpdateList(direction) {
         }
         return GLib.SOURCE_REMOVE;
     });
+    this._closetabSyncId = id;
+    pendingSyncIds.add(id);
+}
+
+/**
+ * cancelSync:
+ *
+ * Drops a switcher's queued idle, if it still has one. Checking the set before
+ * removing keeps this safe against a source disable() already swept, which
+ * would otherwise warn about an unknown source ID.
+ */
+function cancelSync(switcher) {
+    let id = switcher._closetabSyncId;
+    if (id && pendingSyncIds.has(id)) {
+        Mainloop.source_remove(id);
+        pendingSyncIds.delete(id);
+    }
+    switcher._closetabSyncId = 0;
 }
 
 /* ClassicSwitcher.prototype._onDestroy - drop the idle we may have queued. */
 function patchedOnDestroy() {
-    if (this._watSyncId) {
-        Mainloop.source_remove(this._watSyncId);
-        this._watSyncId = 0;
-    }
+    cancelSync(this);
     originals.onDestroy.call(this);
 }
 
@@ -301,7 +324,7 @@ function patchedOnDestroy() {
 function patchedSwitcherInit(binding) {
     originals.switcherInit.apply(this, arguments);
 
-    this._watSyncId = 0;
+    this._closetabSyncId = 0;
 
     if (this._mcid > 0) {
         this._windowManager.disconnect(this._mcid);
@@ -330,7 +353,7 @@ function patchedKeyPressEvent(actor, event) {
                 this._disableHover();
                 if (this._windows && this._windows.length > 0)
                     closeWindow(this._windows[this._currentIndex]);
-                return true;
+                return Clutter.EVENT_STOP;
             }
         }
     }
@@ -393,12 +416,19 @@ function disable() {
     ClassicSwitcher.prototype._updateList = originals.updateList;
     ClassicSwitcher.prototype._onDestroy = originals.onDestroy;
 
+    // Cancel any idle still queued. A switcher normally does this itself in
+    // _onDestroy, but the patch providing that has just been reverted above,
+    // so anything outstanding is ours to clean up.
+    for (let id of pendingSyncIds)
+        Mainloop.source_remove(id);
+    pendingSyncIds.clear();
+
     originals = null;
     pendingCloses.clear();
     lastCloseRequest = 0;
 
-    // Every signal and actor this extension creates belongs to a switcher
-    // instance, and switchers are torn down (with their actors) as soon as
-    // Alt is released, so there is nothing else left connected.
+    // Every other signal and actor this extension creates belongs to a
+    // switcher instance and dies with it when Alt is released, so with the
+    // timers cancelled nothing of ours is left running.
     global.log(LOG_PREFIX + 'extension disabled');
 }

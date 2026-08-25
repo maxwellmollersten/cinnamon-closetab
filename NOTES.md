@@ -68,6 +68,28 @@ Constants near the top of `extension.js`:
   decorated; **Q**-to-close still works there.
 * Disabling the extension while the switcher is on screen leaves that one
   switcher instance decorated. It is torn down as soon as you release Alt.
+  Its close buttons keep working until then, but nothing of the extension
+  outlives it: `disable()` cancels any idle still queued, and every signal and
+  actor belongs to the switcher and dies with it.
+
+## Cleanup
+
+The only external resource this extension holds is a one-shot idle source,
+queued by `_updateList` to re-sync close-button visibility after the preview
+list is rebuilt under a stationary pointer.
+
+Live source IDs are tracked in a module-level `pendingSyncIds` set. A switcher
+normally cancels its own in `_onDestroy`, but when the extension is disabled
+while a switcher is open that patch has already been reverted, so `disable()`
+sweeps the set. `cancelSync()` checks membership before removing, so a source
+`disable()` already swept is never removed twice — which would otherwise warn
+about an unknown source ID if the extension were re-enabled and that switcher
+then destroyed.
+
+Everything else is owned by a switcher instance: the wrapper actor, the close
+button, and the `notify::hover` / `button-press-event` / `button-release-event`
+connections all live on actors that Cinnamon destroys when the switcher closes,
+which drops their signal connections with them.
 
 ## Not implemented (deliberately)
 
