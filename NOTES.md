@@ -23,7 +23,7 @@ methods, saving each original so `disable()` can put it back:
 | `AppIcon.prototype._init` | wraps the stock preview in an `St.Widget` + `Clutter.BinLayout` and overlays the close button in the top-right corner |
 | `AppList.prototype._addIcon` | wires hover visibility and middle-click onto the `item-box` button that was just created |
 | `ClassicSwitcher.prototype._updateList` | re-syncs close-button visibility after the list is rebuilt under a stationary pointer |
-| `ClassicSwitcher.prototype._onDestroy` | drops the idle callback the above may have queued |
+| `AppSwitcher.prototype.destroy` | tracks live switchers and drops the idle callback the above may have queued |
 | `AppSwitcher.prototype._keyPressEvent` | **Q** closes the selected window |
 | `AppSwitcher.prototype._init` | replaces the `'map'` handler (see below) |
 
@@ -66,25 +66,22 @@ Constants near the top of `extension.js`:
   default is `icons+thumbnails`). The `coverflow` and `timeline` styles draw
   3D-transformed window clones through a different class hierarchy and are not
   decorated; **Q**-to-close still works there.
-* Disabling the extension while the switcher is on screen leaves that one
-  switcher instance decorated. It is torn down as soon as you release Alt.
-  Its close buttons keep working until then, but nothing of the extension
-  outlives it: `disable()` cancels any idle still queued, and every signal and
-  actor belongs to the switcher and dies with it.
+* Disabling the extension while the switcher is on screen closes that switcher
+  immediately. This ensures its window-manager signal handlers and decorated
+  actors are removed before the extension is unloaded.
 
 ## Cleanup
 
-The only external resource this extension holds is a one-shot idle source,
-queued by `_updateList` to re-sync close-button visibility after the preview
-list is rebuilt under a stationary pointer.
+The guarded `map` connection is stored in Cinnamon's existing `_mcid` field, so
+the stock `AppSwitcher.destroy()` path disconnects it along with the stock
+`destroy` connection. Live switchers are tracked in `activeSwitchers` and closed
+by `disable()` before the patched prototypes are restored.
 
-Live source IDs are tracked in a module-level `pendingSyncIds` set. A switcher
-normally cancels its own in `_onDestroy`, but when the extension is disabled
-while a switcher is open that patch has already been reverted, so `disable()`
-sweeps the set. `cancelSync()` checks membership before removing, so a source
-`disable()` already swept is never removed twice — which would otherwise warn
-about an unknown source ID if the extension were re-enabled and that switcher
-then destroyed.
+The one-shot idle source queued by `_updateList` is similarly tracked in a
+module-level `pendingSyncIds` set. `patchedDestroy()` normally cancels it, and
+`disable()` performs a final sweep in case switcher construction failed before
+normal teardown. `cancelSync()` checks set membership, so a source is never
+removed twice.
 
 Everything else is owned by a switcher instance: the wrapper actor, the close
 button, and the `notify::hover` / `button-press-event` / `button-release-event`

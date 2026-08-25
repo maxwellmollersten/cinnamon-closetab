@@ -62,8 +62,9 @@ Disable it in **Menu → Preferences → Extensions**, then:
 rm -rf ~/.local/share/cinnamon/extensions/closetab@maxwellmollersten
 ```
 
-Disabling restores every Cinnamon function the extension patched; nothing under
-`/usr/share/cinnamon/` is ever touched.
+Disabling closes any Alt+Tab switcher that is currently open and restores every
+Cinnamon function the extension patched; nothing under `/usr/share/cinnamon/`
+is ever touched.
 
 ## More
 

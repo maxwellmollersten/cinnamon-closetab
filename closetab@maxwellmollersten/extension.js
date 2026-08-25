@@ -28,7 +28,8 @@
 //     AppIcon.prototype._init              - wrap the preview and add the X
 //     AppList.prototype._addIcon           - hover + middle-click wiring
 //     ClassicSwitcher.prototype._updateList- re-sync hover after a rebuild
-//     ClassicSwitcher.prototype._onDestroy - drop our idle callback
+//     AppSwitcher.prototype.destroy        - track live switchers and drop our
+//                                            idle callback during teardown
 //
 //   Everything else is left to Cinnamon: AppSwitcher._removeDestroyedWindow()
 //   already reacts to the window manager's 'destroy' signal by splicing the
@@ -69,10 +70,13 @@ let originals = null;
 let pendingCloses = new Map();
 let lastCloseRequest = 0;
 
+// Switchers created while the extension is enabled. disable() closes any that
+// are still open so their external window-manager signals cannot outlive us.
+let activeSwitchers = new Set();
+
 // Every idle source we currently have queued, so disable() can cancel them.
-// A switcher normally cancels its own in _onDestroy, but if the extension is
-// disabled while one is open that patch is already gone, so the sweep in
-// disable() is what guarantees nothing outlives us.
+// A switcher normally cancels its own through patchedDestroy(); disable() also
+// performs a final sweep in case construction failed before normal teardown.
 let pendingSyncIds = new Set();
 
 function nowMs() {
@@ -123,10 +127,20 @@ function closeWindow(metaWindow) {
     return true;
 }
 
+function prunePendingCloses(now) {
+    for (let [pid, requestedAt] of pendingCloses) {
+        if (now - requestedAt > CLOSE_CONFIRM_GRACE_MS)
+            pendingCloses.delete(pid);
+    }
+}
+
 function rememberCloseRequest(metaWindow) {
+    let now = nowMs();
+    prunePendingCloses(now);
+
     let pid = metaWindow.get_pid();
     if (pid > 0)
-        pendingCloses.set(pid, nowMs());
+        pendingCloses.set(pid, now);
 }
 
 /**
@@ -136,6 +150,9 @@ function rememberCloseRequest(metaWindow) {
  * very recently - i.e. it is almost certainly a "Save before closing?" dialog.
  */
 function isProbableCloseConfirmation(metaWindow) {
+    let now = nowMs();
+    prunePendingCloses(now);
+
     if (!metaWindow)
         return false;
 
@@ -146,11 +163,6 @@ function isProbableCloseConfirmation(metaWindow) {
     let requestedAt = pendingCloses.get(pid);
     if (requestedAt === undefined)
         return false;
-
-    if (nowMs() - requestedAt > CLOSE_CONFIRM_GRACE_MS) {
-        pendingCloses.delete(pid);
-        return false;
-    }
     return true;
 }
 
@@ -311,10 +323,12 @@ function cancelSync(switcher) {
     switcher._closetabSyncId = 0;
 }
 
-/* ClassicSwitcher.prototype._onDestroy - drop the idle we may have queued. */
-function patchedOnDestroy() {
+/* AppSwitcher.prototype.destroy - drop instance state before Cinnamon tears
+ * down its actors, timers, and external window-manager signal handlers. */
+function patchedDestroy() {
     cancelSync(this);
-    originals.onDestroy.call(this);
+    activeSwitchers.delete(this);
+    originals.destroy.call(this);
 }
 
 /* AppSwitcher.prototype._init - Cinnamon dismisses the switcher (and activates
@@ -325,6 +339,7 @@ function patchedSwitcherInit(binding) {
     originals.switcherInit.apply(this, arguments);
 
     this._closetabSyncId = 0;
+    activeSwitchers.add(this);
 
     if (this._mcid > 0) {
         this._windowManager.disconnect(this._mcid);
@@ -379,19 +394,19 @@ function enable() {
 
     originals = {
         switcherInit: AppSwitcher.prototype._init,
+        destroy: AppSwitcher.prototype.destroy,
         keyPressEvent: AppSwitcher.prototype._keyPressEvent,
         appIconInit: AppIcon.prototype._init,
         appListAddIcon: AppList.prototype._addIcon,
-        updateList: ClassicSwitcher.prototype._updateList,
-        onDestroy: ClassicSwitcher.prototype._onDestroy
+        updateList: ClassicSwitcher.prototype._updateList
     };
 
     AppSwitcher.prototype._init = patchedSwitcherInit;
+    AppSwitcher.prototype.destroy = patchedDestroy;
     AppSwitcher.prototype._keyPressEvent = patchedKeyPressEvent;
     AppIcon.prototype._init = patchedAppIconInit;
     AppList.prototype._addIcon = patchedAddIcon;
     ClassicSwitcher.prototype._updateList = patchedUpdateList;
-    ClassicSwitcher.prototype._onDestroy = patchedOnDestroy;
 
     let style = global.settings.get_string('alttab-switcher-style');
     if (style === 'coverflow' || style === 'timeline') {
@@ -409,16 +424,24 @@ function disable() {
     let AppSwitcher = AppSwitcherModule.AppSwitcher;
     let { ClassicSwitcher, AppIcon, AppList } = ClassicSwitcherModule;
 
+    // Destroy live switchers while our methods are still installed. Cinnamon's
+    // normal destroy path disconnects their external window-manager signals and
+    // destroys their actor-owned signal handlers.
+    for (let switcher of Array.from(activeSwitchers)) {
+        if (!switcher._destroyed)
+            switcher.destroy();
+    }
+    activeSwitchers.clear();
+
     AppSwitcher.prototype._init = originals.switcherInit;
+    AppSwitcher.prototype.destroy = originals.destroy;
     AppSwitcher.prototype._keyPressEvent = originals.keyPressEvent;
     AppIcon.prototype._init = originals.appIconInit;
     AppList.prototype._addIcon = originals.appListAddIcon;
     ClassicSwitcher.prototype._updateList = originals.updateList;
-    ClassicSwitcher.prototype._onDestroy = originals.onDestroy;
 
-    // Cancel any idle still queued. A switcher normally does this itself in
-    // _onDestroy, but the patch providing that has just been reverted above,
-    // so anything outstanding is ours to clean up.
+    // A final sweep covers an idle whose switcher failed before completing its
+    // normal destroy path.
     for (let id of pendingSyncIds)
         Mainloop.source_remove(id);
     pendingSyncIds.clear();
@@ -427,8 +450,7 @@ function disable() {
     pendingCloses.clear();
     lastCloseRequest = 0;
 
-    // Every other signal and actor this extension creates belongs to a
-    // switcher instance and dies with it when Alt is released, so with the
-    // timers cancelled nothing of ours is left running.
+    // Every other signal and actor this extension creates belonged to one of
+    // the switchers destroyed above, so nothing of ours is left running.
     global.log(LOG_PREFIX + 'extension disabled');
 }
